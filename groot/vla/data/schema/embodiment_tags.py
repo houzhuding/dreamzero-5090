@@ -92,6 +92,11 @@ class EmbodimentTag(Enum):
     The DEXMG bimanual panda dataset with inspire hands.
     """
 
+    ANT_BIMANUAL_FR3_PARALLEL_GRIPPER = "ant_bimanual_fr3_parallel_gripper"
+    """
+    The ANT bimanual FR3 dataset with parallel grippers.
+    """
+
     OXE_DROID = "oxe_droid"
     """
     The Open X-Embodiment droid dataset.

@@ -341,6 +341,158 @@ transform_yam:
     # Model-specific transform
     - ${model_specific_transform}
 
+################################################################################
+# robocasa_bimanual_panda_parallel_gripper (RoboCasa Bimanual Panda with Parallel Grippers)
+################################################################################
+
+modality_config_robocasa_bimanual_panda_parallel_gripper:
+  video:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    eval_delta_indices: [0]
+    modality_keys:
+      - video.head
+      - video.left_wrist
+      - video.right_wrist
+  state:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - state.left_ee_pos
+      - state.right_ee_pos
+      - state.gripper_pos
+  action:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    modality_keys:
+      - action.left_ee_pos
+      - action.right_ee_pos
+      - action.gripper_pos
+
+transform_robocasa_bimanual_panda_parallel_gripper:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    # Video transforms
+    - <<: *totensor_cfg
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+    - <<: *crop_cfg
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+    - <<: *resize_cfg
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+    - <<: *color_jitter_cfg
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+    - <<: *to_numpy_cfg
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+
+    # State transforms
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.state.modality_keys}
+      normalization_modes:
+        state.left_ee_pos: q99
+        state.right_ee_pos: q99
+        state.gripper_pos: q99
+
+    # Action transforms
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_robocasa_bimanual_panda_parallel_gripper.action.modality_keys}
+      normalization_modes:
+        action.left_ee_pos: q99
+        action.right_ee_pos: q99
+        action.gripper_pos: q99
+
+    # ConcatTransform
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_robocasa_bimanual_panda_parallel_gripper.video.modality_keys}
+      state_concat_order: ${modality_config_robocasa_bimanual_panda_parallel_gripper.state.modality_keys}
+      action_concat_order: ${modality_config_robocasa_bimanual_panda_parallel_gripper.action.modality_keys}
+
+    # Model-specific transform
+    - ${model_specific_transform}
+
+################################################################################
+# ant_bimanual_fr3_parallel_gripper (ANT Bimanual FR3 with Parallel Grippers)
+################################################################################
+
+modality_config_ant_bimanual_fr3_parallel_gripper:
+  video:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    eval_delta_indices: [0]
+    modality_keys:
+      - video.head
+      - video.left_wrist
+      - video.right_wrist
+  state:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0]
+    modality_keys:
+      - state.left_joint_pos
+      - state.right_joint_pos
+      - state.left_joint_torque
+      - state.right_joint_torque
+      - state.left_ee_pose6d
+      - state.right_ee_pose6d
+      - state.left_wrist_wrench
+      - state.right_wrist_wrench
+  action:
+    _target_: groot.vla.data.dataset.ModalityConfig
+    delta_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+    modality_keys:
+      - action.left_ee_pose6d
+      - action.right_ee_pose6d
+
+transform_ant_bimanual_fr3_parallel_gripper:
+  _target_: groot.vla.data.transform.ComposedModalityTransform
+  transforms:
+    # Video transforms
+    - <<: *totensor_cfg
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+    - <<: *crop_cfg
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+    - <<: *resize_cfg
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+    - <<: *color_jitter_cfg
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+    - <<: *to_numpy_cfg
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+
+    # State transforms
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.state.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.state.modality_keys}
+      normalization_modes:
+        state.left_joint_pos: q99
+        state.right_joint_pos: q99
+        state.left_joint_torque: q99
+        state.right_joint_torque: q99
+        state.left_ee_pose6d: q99
+        state.right_ee_pose6d: q99
+        state.left_wrist_wrench: q99
+        state.right_wrist_wrench: q99
+
+    # Action transforms
+    - _target_: groot.vla.data.transform.StateActionToTensor
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.action.modality_keys}
+    - _target_: groot.vla.data.transform.StateActionTransform
+      apply_to: ${modality_config_ant_bimanual_fr3_parallel_gripper.action.modality_keys}
+      normalization_modes:
+        action.left_ee_pose6d: q99
+        action.right_ee_pose6d: q99
+
+    # ConcatTransform
+    - _target_: groot.vla.data.transform.ConcatTransform
+      video_concat_order: ${modality_config_ant_bimanual_fr3_parallel_gripper.video.modality_keys}
+      state_concat_order: ${modality_config_ant_bimanual_fr3_parallel_gripper.state.modality_keys}
+      action_concat_order: ${modality_config_ant_bimanual_fr3_parallel_gripper.action.modality_keys}
+
+    # Model-specific transform
+    - ${model_specific_transform}
+
 
 ################################################################################
 # Modality Configs
@@ -350,6 +502,8 @@ modality_configs:
   oxe_droid: ${modality_config_oxe_droid}
   agibot: ${modality_config_agibot}
   yam: ${modality_config_yam}
+  robocasa_bimanual_panda_parallel_gripper: ${modality_config_robocasa_bimanual_panda_parallel_gripper}
+  ant_bimanual_fr3_parallel_gripper: ${modality_config_ant_bimanual_fr3_parallel_gripper}
 
 ################################################################################
 # Transforms
@@ -359,6 +513,8 @@ transforms:
   oxe_droid: ${transform_oxe_droid}
   agibot: ${transform_agibot}
   yam: ${transform_yam}
+  robocasa_bimanual_panda_parallel_gripper: ${transform_robocasa_bimanual_panda_parallel_gripper}
+  ant_bimanual_fr3_parallel_gripper: ${transform_ant_bimanual_fr3_parallel_gripper}
 
 ################################################################################
 # Metadata Versions
@@ -368,6 +524,8 @@ metadata_versions:
   oxe_droid: '0221'
   agibot: '0221'
   yam: '0221'
+  robocasa_bimanual_panda_parallel_gripper: '0221'
+  ant_bimanual_fr3_parallel_gripper: '0221'
 
 ################################################################################
 # FPS (per embodiment, null means use dataset default)
@@ -375,3 +533,5 @@ metadata_versions:
 
 fps:
   yam: 30
+  robocasa_bimanual_panda_parallel_gripper: 30
+  ant_bimanual_fr3_parallel_gripper: 30

@@ -1,0 +1,71 @@
+{
+  "dataset_name": "dreamzero_bimanual_peginhole_v1",
+  "features": {
+    "episode_id": "int32",
+    "timestep": "int32",
+    "timestamp_sec": "float64",
+    "observation.state.left.q": "float32[7]",
+    "observation.state.left.dq": "float32[7]",
+    "observation.state.left.ee_pos": "float32[3]",
+    "observation.state.left.ee_quat": "float32[4]",
+    "observation.state.right.q": "float32[7]",
+    "observation.state.right.dq": "float32[7]",
+    "observation.state.right.ee_pos": "float32[3]",
+    "observation.state.right.ee_quat": "float32[4]",
+    "observation.state.peg_pos": "float32[3]",
+    "observation.state.peg_quat": "float32[4]",
+    "observation.state.hole_pos": "float32[3]",
+    "observation.state.hole_quat": "float32[4]",
+    "action.teleop.left.dpos_world": "float32[3]",
+    "action.teleop.left.drpy_cmd": "float32[3]",
+    "action.teleop.right.dpos_world": "float32[3]",
+    "action.teleop.right.drpy_cmd": "float32[3]",
+    "action.target.left.pos": "float32[3]",
+    "action.target.left.quat": "float32[4]",
+    "action.target.right.pos": "float32[3]",
+    "action.target.right.quat": "float32[4]",
+    "action.gripper.left": "float32",
+    "action.gripper.right": "float32",
+    "event.done": "bool",
+    "event.would_have_done": "bool",
+    "event.success": "bool",
+    "event.failure_reason": "string",
+    "event.manual_done": "bool"
+  },
+  "total_episodes": 1,
+  "fps": 30,
+  "camera_map": {
+    "head": "cam_head",
+    "left_wrist": "cam_left_wrist",
+    "right_wrist": "cam_right_wrist"
+  },
+  "collection_config": {
+    "mapping_frame": "global",
+    "pos_gain": 0.0003,
+    "ori_gain": 0.0002,
+    "deadband": 0.05,
+    "respect_done": false,
+    "input_log_every": 0,
+    "visualize_cameras": true,
+    "camera_frame_size": 0.08,
+    "wrist_cam_offset_ee": [
+      -0.06,
+      0.0,
+      -0.04
+    ],
+    "wrist_cam_lookahead_m": 0.16,
+    "head_cam_lookat": [
+      0.5,
+      0.0,
+      0.5
+    ],
+    "head_cam_distance": 2.0,
+    "head_cam_azimuth": -180.0,
+    "head_cam_elevation": -25.0,
+    "width": 640,
+    "height": 480,
+    "max_steps": 1000,
+    "chunk_size": 100,
+    "single": true
+  }
+}
