@@ -127,6 +127,57 @@ def parse_key_mapping(raw: str | None) -> dict[str, list[int]] | None:
     return mapping
 
 
+def parse_layout_mapping(info: dict, layout_key: str) -> dict[str, list[int]] | None:
+    """Parse a mapping from info.json collection_config.<layout_key>.
+
+    Expected form:
+      info["collection_config"][layout_key] = {"name": [start, end], ...}
+    """
+    collection_cfg = info.get("collection_config", {})
+    raw_layout = collection_cfg.get(layout_key)
+    if raw_layout is None:
+        return None
+    if not isinstance(raw_layout, dict):
+        log.warning("collection_config.%s is not a dict, ignoring", layout_key)
+        return None
+
+    parsed: dict[str, list[int]] = {}
+    for name, bounds in raw_layout.items():
+        if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+            log.warning("Invalid %s entry for '%s': %s", layout_key, name, bounds)
+            continue
+        start, end = bounds
+        try:
+            parsed[name] = [int(start), int(end)]
+        except Exception:
+            log.warning("Non-integer bounds in %s for '%s': %s", layout_key, name, bounds)
+
+    return parsed or None
+
+
+def parse_relative_key_map(raw: list[str] | None) -> dict[str, str] | None:
+    """Parse action->state key mapping entries like:
+
+    ["left_target_pose9d_rot6d=left_ee_pose9d_rot6d", "right_target_pose9d_rot6d=right_ee_pose9d_rot6d"]
+    """
+    if not raw:
+        return None
+
+    mapping: dict[str, str] = {}
+    for entry in raw:
+        if "=" not in entry:
+            log.error("Invalid --relative-action-state-map entry '%s' (expected action_key=state_key)", entry)
+            sys.exit(1)
+        action_key, state_key = entry.split("=", 1)
+        action_key = action_key.strip()
+        state_key = state_key.strip()
+        if not action_key or not state_key:
+            log.error("Invalid --relative-action-state-map entry '%s' (empty action/state key)", entry)
+            sys.exit(1)
+        mapping[action_key] = state_key
+    return mapping
+
+
 # ---------------------------------------------------------------------------
 # Modality JSON
 # ---------------------------------------------------------------------------
@@ -248,10 +299,72 @@ def compute_stats(parquet_paths: list[Path], columns: list[str]) -> dict:
     return stats
 
 
+
+def compute_stats_by_modality(parquet_paths: list[Path], modality: dict, columns: list[str]) -> dict:
+    """Compute mean/std/min/max/q01/q99 keyed by modality field names.
+    
+    Instead of keying by 'observation.state' (which has all state fields),
+    split it into individual keys like 'left_q', 'right_q', etc. based on
+    the modality.json index ranges.
+    """
+    # First pass: collect raw data by column name
+    all_data: dict[str, list] = {col: [] for col in columns}
+    for pp in tqdm(parquet_paths, desc="Computing stats"):
+        df = pd.read_parquet(pp)
+        for col in columns:
+            if col not in df.columns:
+                continue
+            arr = np.stack(df[col].values)
+            if arr.ndim == 1:
+                arr = arr.reshape(-1, 1)
+            all_data[col].append(arr)
+    
+    # Consolidate raw data
+    consolidated: dict[str, np.ndarray] = {}
+    for col in columns:
+        if not all_data[col]:
+            continue
+        data = np.concatenate(all_data[col], axis=0).astype(np.float64)
+        consolidated[col] = data
+    
+    # Second pass: extract stats by modality field
+    stats = {}
+    for modality_type in ['state', 'action']:
+        stats[modality_type] = {}
+        if modality_type not in modality:
+            continue
+        
+        for field_name, field_info in modality[modality_type].items():
+            original_col = field_info['original_key']
+            start = field_info['start']
+            end = field_info['end']
+            
+            if original_col not in consolidated:
+                log.warning(f"{original_col} not found in data, skipping {field_name}")
+                continue
+            
+            # Extract the slice for this field
+            full_data = consolidated[original_col]  # shape: (N, total_dim)
+            field_data = full_data[:, start:end]     # shape: (N, field_dim)
+            
+            # Compute statistics
+            stats[modality_type][field_name] = {
+                "mean": np.mean(field_data, axis=0).tolist(),
+                "std": np.std(field_data, axis=0).tolist(),
+                "min": np.min(field_data, axis=0).tolist(),
+                "max": np.max(field_data, axis=0).tolist(),
+                "q01": np.quantile(field_data, 0.01, axis=0).tolist(),
+                "q99": np.quantile(field_data, 0.99, axis=0).tolist(),
+            }
+    
+    return stats
+
+
 def compute_relative_stats(
     parquet_paths: list[Path],
     modality: dict,
     relative_action_keys: list[str],
+    action_to_state_key_map: dict[str, str] | None = None,
     action_horizon: int = 24,
 ) -> dict:
     """Compute relative-action statistics: (action - reference_state) for each key.
@@ -260,23 +373,26 @@ def compute_relative_stats(
     _calculate_relative_stats_for_key.
     """
     stats: dict = {}
-    for rel_key in relative_action_keys:
-        if rel_key not in modality["action"]:
-            log.warning("Relative action key '%s' not found in action modality, skipping", rel_key)
+    action_to_state_key_map = action_to_state_key_map or {}
+
+    for rel_action_key in relative_action_keys:
+        if rel_action_key not in modality["action"]:
+            log.warning("Relative action key '%s' not found in action modality, skipping", rel_action_key)
             continue
-        if rel_key not in modality["state"]:
+        rel_state_key = action_to_state_key_map.get(rel_action_key, rel_action_key)
+        if rel_state_key not in modality["state"]:
             log.warning(
-                "Relative action key '%s' has no matching state key -- "
-                "relative stats require a corresponding state key with the same name. Skipping.",
-                rel_key,
+                "Relative action key '%s' has no matching state key '%s'. Skipping.",
+                rel_action_key,
+                rel_state_key,
             )
             continue
 
-        action_meta = modality["action"][rel_key]
-        state_meta = modality["state"][rel_key]
+        action_meta = modality["action"][rel_action_key]
+        state_meta = modality["state"][rel_state_key]
 
         all_relative = []
-        for pp in tqdm(parquet_paths, desc=f"Relative stats [{rel_key}]"):
+        for pp in tqdm(parquet_paths, desc=f"Relative stats [{rel_action_key}->{rel_state_key}]"):
             df = pd.read_parquet(pp)
             action_col = action_meta["original_key"]
             state_col = state_meta["original_key"]
@@ -306,11 +422,11 @@ def compute_relative_stats(
                 all_relative.extend(relative)
 
         if not all_relative:
-            log.warning("No relative actions computed for '%s'", rel_key)
+            log.warning("No relative actions computed for '%s'", rel_action_key)
             continue
 
         data = np.array(all_relative)
-        stats[rel_key] = {
+        stats[rel_action_key] = {
             "max": np.max(data, axis=0).tolist(),
             "min": np.min(data, axis=0).tolist(),
             "mean": np.mean(data, axis=0).tolist(),
@@ -436,7 +552,13 @@ def main():
     parser.add_argument(
         "--relative-action-keys", type=str, nargs="*", default=None,
         help="Action sub-key names to compute relative stats for (e.g. joint_pos gripper_pos). "
-             "Each key must also exist in --state-keys. If omitted, skips relative stats."
+             "By default each action key is matched to a state key with the same name; use "
+             "--relative-action-state-map for explicit action->state matching."
+    )
+    parser.add_argument(
+        "--relative-action-state-map", type=str, nargs="*", default=None,
+        help="Optional explicit action->state key mapping for relative stats, entries as "
+             "action_key=state_key (e.g. left_target_pose9d_rot6d=left_ee_pose9d_rot6d)."
     )
     parser.add_argument("--task-key", type=str, default=None, help="Column name for language annotations (auto-detected if not set)")
     parser.add_argument("--fps", type=float, default=None, help="Override FPS (default: use dataset FPS from info.json)")
@@ -444,6 +566,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite existing GEAR metadata files")
 
     args = parser.parse_args()
+    relative_action_state_map = parse_relative_key_map(args.relative_action_state_map)
 
     dataset_path = Path(args.dataset_path).resolve()
     if not dataset_path.exists():
@@ -499,6 +622,22 @@ def main():
     state_mapping = parse_key_mapping(args.state_keys)
     action_mapping = parse_key_mapping(args.action_keys)
 
+    # Auto-detect key mappings from info.json if not explicitly provided.
+    if state_mapping is None:
+        state_mapping = parse_layout_mapping(info, "state_vector_layout")
+        if state_mapping is not None:
+            log.info(
+                "  Auto-detected state mapping from collection_config.state_vector_layout (%d keys)",
+                len(state_mapping),
+            )
+    if action_mapping is None:
+        action_mapping = parse_layout_mapping(info, "action_vector_layout")
+        if action_mapping is not None:
+            log.info(
+                "  Auto-detected action mapping from collection_config.action_vector_layout (%d keys)",
+                len(action_mapping),
+            )
+
     # Auto-detect task key if not provided
     task_key = args.task_key
     if task_key is None and detected["annotation"]:
@@ -549,10 +688,11 @@ def main():
         log.info("  stats.json already exists, skipping")
     else:
         log.info("  Computing dataset statistics...")
-        stats = compute_stats(parquet_paths, numeric_cols)
+        stats = compute_stats_by_modality(parquet_paths, modality, numeric_cols)
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=4)
-        log.info("  Wrote stats.json (%d features)", len(stats))
+        total_keys = len(stats.get('state', {})) + len(stats.get('action', {}))
+        log.info("  Wrote stats.json (%d keys)", total_keys)
 
     # 6. Compute relative_stats_dreamzero.json
     rel_stats_path = meta_dir / "relative_stats_dreamzero.json"
@@ -563,6 +703,7 @@ def main():
             log.info("  Computing relative action statistics for keys: %s", args.relative_action_keys)
             rel_stats = compute_relative_stats(
                 parquet_paths, modality, args.relative_action_keys,
+                action_to_state_key_map=relative_action_state_map,
                 action_horizon=args.action_horizon,
             )
             if rel_stats:

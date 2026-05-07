@@ -10,8 +10,21 @@ import dataclasses
 import logging
 import traceback
 
-from openpi_client.base_policy import BasePolicy
-from openpi_client import msgpack_numpy
+try:
+    from openpi_client.base_policy import BasePolicy
+except Exception:
+    class BasePolicy:
+        def infer(self, obs):
+            raise NotImplementedError
+
+        def reset(self, reset_info):
+            raise NotImplementedError
+
+try:
+    from openpi_client import msgpack_numpy
+except Exception:
+    from . import msgpack_numpy_compat as msgpack_numpy
+
 import websockets.asyncio.server
 import websockets.frames
 

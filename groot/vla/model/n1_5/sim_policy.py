@@ -544,11 +544,24 @@ class GrootSimPolicy(BaseGrootSimPolicy):
         relative_action = self.train_cfg.get('relative_action', False)
         relative_action_per_horizon = self.train_cfg.get('relative_action_per_horizon', False)
         relative_action_keys = self.train_cfg.get('relative_action_keys', [])
+        relative_action_state_map = self.train_cfg.get('relative_action_state_map', {}) or {}
         print("relative_action_per_horizon", relative_action_per_horizon)
         if (relative_action or relative_action_per_horizon) and relative_action_keys and obs is not None:
             for key in relative_action_keys:
                 action_key = f"action.{key}"
-                state_key = f"state.{key}"
+                mapped_state_subkey = relative_action_state_map.get(key, key)
+
+                if mapped_state_subkey == key:
+                    if key == 'left_target_pose9d_rot6d':
+                        mapped_state_subkey = 'left_ee_pose9d_rot6d'
+                    elif key == 'right_target_pose9d_rot6d':
+                        mapped_state_subkey = 'right_ee_pose9d_rot6d'
+                    elif key == 'left_target_pose6d':
+                        mapped_state_subkey = 'left_ee_pose6d'
+                    elif key == 'right_target_pose6d':
+                        mapped_state_subkey = 'right_ee_pose6d'
+
+                state_key = f"state.{mapped_state_subkey}"
                 
                 if action_key not in unnormalized_action:
                     continue
@@ -563,7 +576,7 @@ class GrootSimPolicy(BaseGrootSimPolicy):
                 elif last_state is None:
                     # Format 2: Search for keys containing both "state" and the key name
                     for obs_key in obs.keys():
-                        if 'state' in obs_key and key in obs_key:
+                        if 'state' in obs_key and mapped_state_subkey in obs_key:
                             last_state = obs[obs_key]
                             break
                     

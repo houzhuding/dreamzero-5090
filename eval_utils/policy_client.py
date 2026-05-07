@@ -11,8 +11,20 @@ from typing import Dict, Tuple
 import websockets.sync.client
 from typing_extensions import override
 
-from openpi_client.base_policy import BasePolicy
-from openpi_client import msgpack_numpy
+try:
+    from openpi_client.base_policy import BasePolicy
+except Exception:
+    class BasePolicy:
+        def infer(self, obs: Dict) -> Dict:  # noqa: UP006
+            raise NotImplementedError
+
+        def reset(self, reset_info: Dict) -> None:  # noqa: UP006
+            raise NotImplementedError
+
+try:
+    from openpi_client import msgpack_numpy
+except Exception:
+    from . import msgpack_numpy_compat as msgpack_numpy
 
 # The websockets library by default sends a ping every 20 seconds and
 # expects a pong response within 20 seconds. However, the sever may not
