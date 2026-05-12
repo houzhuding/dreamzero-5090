@@ -8,25 +8,12 @@ import logging
 import os
 import time
 from typing import Dict, Tuple
-from urllib.parse import urlparse
 
 import websockets.sync.client
 from typing_extensions import override
 
-try:
-    from openpi_client.base_policy import BasePolicy
-except Exception:
-    class BasePolicy:
-        def infer(self, obs: Dict) -> Dict:  # noqa: UP006
-            raise NotImplementedError
-
-        def reset(self, reset_info: Dict) -> None:  # noqa: UP006
-            raise NotImplementedError
-
-try:
-    from openpi_client import msgpack_numpy
-except Exception:
-    from . import msgpack_numpy_compat as msgpack_numpy
+from openpi_client.base_policy import BasePolicy
+from openpi_client import msgpack_numpy
 
 # The websockets library by default sends a ping every 20 seconds and
 # expects a pong response within 20 seconds. However, the sever may not
@@ -34,9 +21,9 @@ except Exception:
 # Increase the ping interval and timeout so that the client can wait
 # for a longer time before closing the connection.
 PING_INTERVAL_SECS = 60
-PING_TIMEOUT_SECS = int(float(os.environ.get("DREAMZERO_WS_PING_TIMEOUT_SECS", str(24 * 3600))))
+PING_TIMEOUT_SECS = int(float(os.environ.get("DREAMZERO_WS_PING_TIMEOUT_SECS", "600")))
 OPEN_TIMEOUT_SECS = float(os.environ.get("DREAMZERO_WS_OPEN_TIMEOUT_SECS", "120"))
-RESPONSE_TIMEOUT_SECS = float(os.environ.get("DREAMZERO_WS_RESPONSE_TIMEOUT_SECS", "120"))
+RESPONSE_TIMEOUT_SECS = float(os.environ.get("DREAMZERO_WS_RESPONSE_TIMEOUT_SECS", "45"))
 MAX_RESPONSE_WAIT_SECS = float(os.environ.get("DREAMZERO_WS_MAX_RESPONSE_WAIT_SECS", "0"))
 
 class WebsocketClientPolicy(BasePolicy):
@@ -54,27 +41,31 @@ class WebsocketClientPolicy(BasePolicy):
         return self._server_metadata
 
     def _recv_with_timeout(self):
-        start = time.time()
-        timeout_s = float(max(0.1, RESPONSE_TIMEOUT_SECS))
+        start = time.perf_counter()
+        deadline = None
+        if MAX_RESPONSE_WAIT_SECS > 0:
+            deadline = start + MAX_RESPONSE_WAIT_SECS
 
         while True:
-            try:
-                return self._ws.recv(timeout=timeout_s)
-            except TypeError:
-                return self._ws.recv()
-            except TimeoutError:
-                waited = time.time() - start
-                if MAX_RESPONSE_WAIT_SECS > 0 and waited >= MAX_RESPONSE_WAIT_SECS:
+            timeout = RESPONSE_TIMEOUT_SECS
+            if deadline is not None:
+                remaining = deadline - time.perf_counter()
+                if remaining <= 0:
+                    elapsed = time.perf_counter() - start
                     raise TimeoutError(
-                        f"timed out waiting for inference response after {waited:.1f}s "
-                        f"(chunk_timeout={timeout_s:.1f}s, max_wait={MAX_RESPONSE_WAIT_SECS:.1f}s)"
+                        f"timed out waiting for server response after {elapsed:.1f}s "
+                        f"(max={MAX_RESPONSE_WAIT_SECS:.1f}s)"
                     )
+                timeout = min(timeout, remaining)
+
+            try:
+                return self._ws.recv(timeout=timeout)
+            except TimeoutError:
+                elapsed = time.perf_counter() - start
                 logging.warning(
-                    "[ws_client] still waiting for response... waited %.1fs "
-                    "(chunk_timeout=%.1fs, max_wait=%s)",
-                    waited,
-                    timeout_s,
-                    "unlimited" if MAX_RESPONSE_WAIT_SECS <= 0 else f"{MAX_RESPONSE_WAIT_SECS:.1f}s",
+                    "[ws_client] recv timed out after %.1fs (chunk=%.1fs); still waiting...",
+                    elapsed,
+                    timeout,
                 )
 
     def _wait_for_server(self) -> Tuple[websockets.sync.client.ClientConnection, Dict]:
@@ -90,15 +81,10 @@ class WebsocketClientPolicy(BasePolicy):
             )
             metadata = msgpack_numpy.unpackb(conn.recv())
             return conn, metadata
-        except Exception as ws_exc:
-            parsed = urlparse(self._uri)
-            host = (parsed.hostname or "").lower()
-            if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}:
-                raise ws_exc
-
+        except Exception:
             logging.exception("Connection to server with ws:// failed. Trying wss:// ...")
-
-        self._uri = "wss://" + self._uri.split("//", 1)[1]
+            
+        self._uri = "wss://" + self._uri.split("//")[1]
         conn = websockets.sync.client.connect(
             self._uri,
             compression=None,
@@ -116,19 +102,19 @@ class WebsocketClientPolicy(BasePolicy):
         obs["endpoint"] = "infer"
 
         data = self._packer.pack(obs)
-        t0 = time.time()
+        send_start = time.perf_counter()
         self._ws.send(data)
-        t_send = time.time()
+        send_ms = (time.perf_counter() - send_start) * 1000.0
         logging.info(
-            "[ws_client] infer sent bytes=%d send_ms=%.1f; waiting for response (chunk_timeout=%.1fs, max_wait=%s)",
+            "[ws_client] infer sent bytes=%d send_ms=%.1f; waiting for response (timeout=%.1fs)",
             len(data),
-            (t_send - t0) * 1000.0,
+            send_ms,
             RESPONSE_TIMEOUT_SECS,
-            "unlimited" if MAX_RESPONSE_WAIT_SECS <= 0 else f"{MAX_RESPONSE_WAIT_SECS:.1f}s",
         )
+        recv_start = time.perf_counter()
         response = self._recv_with_timeout()
-        t_recv = time.time()
-        logging.info("[ws_client] infer response received in %.1fms", (t_recv - t_send) * 1000.0)
+        recv_ms = (time.perf_counter() - recv_start) * 1000.0
+        logging.info("[ws_client] infer response received in %.1fms", recv_ms)
         if isinstance(response, str):
             # we're expecting bytes; if the server sends a string, it's an error.
             raise RuntimeError(f"Error in inference server:\n{response}")
@@ -141,7 +127,7 @@ class WebsocketClientPolicy(BasePolicy):
 
         data = self._packer.pack(reset_info)
         self._ws.send(data)
-        response = self._ws.recv()
+        response = self._recv_with_timeout()
         return response
 
 if __name__ == "__main__":
