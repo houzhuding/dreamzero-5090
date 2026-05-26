@@ -452,6 +452,9 @@ class DreamTransform(InvertibleModalityTransform):
             return state, state_mask, n_state_tokens
 
         state = data["state"]
+        state = np.asarray(state)
+        if state.ndim == 1:
+            state = state.reshape(1, -1)
         assert state.shape[0] % self.state_horizon == 0, f"{state.shape=}, {self.state_horizon=}"
 
         n_state_dims = state.shape[-1]
