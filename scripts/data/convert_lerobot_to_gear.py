@@ -68,10 +68,39 @@ VALID_EMBODIMENT_TAGS = [
     "ant_bimanual_fr3_parallel_gripper",
 ]
 
+EMBODIMENT_MODALITY_PRESETS = {
+    # Canonical DROID / OXE-DROID LeRobot schema:
+    # observation.state = cartesian_position(6), gripper_position(1), joint_position(7)
+    # action = cartesian_position(6), cartesian_velocity(6), gripper_position(1),
+    #          gripper_velocity(1), joint_position(7), joint_velocity(7)
+    "oxe_droid": {
+        "state": {
+            "cartesian_position": [0, 6],
+            "gripper_position": [6, 7],
+            "joint_position": [7, 14],
+        },
+        "action": {
+            "cartesian_position": [0, 6],
+            "cartesian_velocity": [6, 12],
+            "gripper_position": [12, 13],
+            "gripper_velocity": [13, 14],
+            "joint_position": [14, 21],
+            "joint_velocity": [21, 28],
+        },
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def load_json_if_exists(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    with open(path) as f:
+        return json.load(f)
+
 
 def load_info(dataset_path: Path) -> dict:
     info_path = dataset_path / "meta" / "info.json"
@@ -82,17 +111,82 @@ def load_info(dataset_path: Path) -> dict:
         return json.load(f)
 
 
+def episode_index_from_path(path: Path) -> int:
+    try:
+        return int(path.stem.split("_")[-1])
+    except Exception:
+        return -1
+
+
+def load_existing_tasks(dataset_path: Path) -> tuple[dict[int, str], dict[str, int]]:
+    tasks_path = dataset_path / "meta" / "tasks.jsonl"
+    by_index: dict[int, str] = {}
+    by_text: dict[str, int] = {}
+    if not tasks_path.exists():
+        return by_index, by_text
+    with open(tasks_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            idx = int(row["task_index"])
+            text = str(row["task"])
+            by_index[idx] = text
+            by_text[text] = idx
+    return by_index, by_text
+
+
+def resolve_task_value(value, task_index_to_text: dict[int, str]) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    try:
+        idx = int(value)
+    except Exception:
+        return str(value)
+    return task_index_to_text.get(idx, str(value))
+
+
 def get_parquet_paths(dataset_path: Path, info: dict) -> list[Path]:
     pattern = info.get("data_path", "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet")
-    total_episodes = info["total_episodes"]
-    chunks_size = info.get("chunks_size", 1000)
-    paths = []
-    for ep_idx in range(total_episodes):
+    total_episodes = int(info.get("total_episodes", 0))
+    chunks_size = int(info.get("chunks_size", 1000))
+    episode_ids: list[int] = []
+    episodes_path = dataset_path / "meta" / "episodes.jsonl"
+    if episodes_path.exists():
+        with open(episodes_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                episode_ids.append(int(row["episode_index"]))
+
+    if not episode_ids and total_episodes > 0:
+        episode_ids = list(range(total_episodes))
+
+    paths: list[Path] = []
+    for ep_idx in episode_ids:
         chunk_idx = ep_idx // chunks_size
         p = dataset_path / pattern.format(episode_chunk=chunk_idx, episode_index=ep_idx)
         if p.exists():
             paths.append(p)
-    return sorted(paths)
+
+    if not paths:
+        paths = sorted((dataset_path / "data").glob("chunk-*/episode_*.parquet"), key=episode_index_from_path)
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in sorted(paths, key=episode_index_from_path):
+        if p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
 
 
 def detect_features(info: dict) -> dict:
@@ -153,6 +247,61 @@ def parse_layout_mapping(info: dict, layout_key: str) -> dict[str, list[int]] | 
             log.warning("Non-integer bounds in %s for '%s': %s", layout_key, name, bounds)
 
     return parsed or None
+
+
+def preset_mapping(embodiment_tag: str, modality_type: str) -> dict[str, list[int]] | None:
+    preset = EMBODIMENT_MODALITY_PRESETS.get(embodiment_tag)
+    if not preset:
+        return None
+    mapping = preset.get(modality_type)
+    return dict(mapping) if mapping else None
+
+
+def mapping_from_existing_modality(modality: dict | None, modality_type: str) -> dict[str, list[int]] | None:
+    if not modality or modality_type not in modality:
+        return None
+    out: dict[str, list[int]] = {}
+    for name, cfg in modality[modality_type].items():
+        if "start" in cfg and "end" in cfg:
+            out[name] = [int(cfg["start"]), int(cfg["end"])]
+    return out or None
+
+
+def default_vector_mapping(info: dict, detected: dict, modality_type: str) -> dict[str, list[int]] | None:
+    cols = detected[modality_type]
+    if not cols:
+        return None
+    col = cols[0]
+    shape = info.get("features", {}).get(col, {}).get("shape", [1])
+    dim = int(shape[0] if isinstance(shape, list) else shape)
+    return {modality_type: [0, dim]}
+
+
+def choose_mapping(
+    *,
+    explicit: dict[str, list[int]] | None,
+    existing_modality: dict | None,
+    info: dict,
+    detected: dict,
+    modality_type: str,
+    embodiment_tag: str,
+) -> tuple[dict[str, list[int]] | None, str]:
+    if explicit is not None:
+        return explicit, "explicit CLI"
+
+    existing = mapping_from_existing_modality(existing_modality, modality_type)
+    if existing is not None:
+        return existing, "existing modality.json"
+
+    layout = parse_layout_mapping(info, f"{modality_type}_vector_layout")
+    if layout is not None:
+        return layout, f"collection_config.{modality_type}_vector_layout"
+
+    preset = preset_mapping(embodiment_tag, modality_type)
+    if preset is not None:
+        return preset, f"{embodiment_tag} preset"
+
+    return default_vector_mapping(info, detected, modality_type), "generic full-vector fallback"
 
 
 def parse_relative_key_map(raw: list[str] | None) -> dict[str, str] | None:
@@ -255,13 +404,12 @@ def build_modality_json(
         modality["video"][short_name] = {"original_key": vk}
 
     # --- Annotation ---
-    if task_key:
-        short = task_key.replace("annotation.", "")
-        modality["annotation"][short] = {"original_key": task_key}
-    else:
-        for ak in detected["annotation"]:
-            short = ak.replace("annotation.", "")
-            modality["annotation"][short] = {"original_key": ak}
+    annotation_keys = list(detected["annotation"])
+    if task_key and task_key not in annotation_keys:
+        annotation_keys.insert(0, task_key)
+    for ak in annotation_keys:
+        short = ak.replace("annotation.", "")
+        modality["annotation"][short] = {"original_key": ak}
 
     return modality
 
@@ -442,20 +590,31 @@ def compute_relative_stats(
 # Tasks & episodes
 # ---------------------------------------------------------------------------
 
-def build_tasks(parquet_paths: list[Path], task_key: str | None) -> list[dict]:
+def build_tasks(
+    parquet_paths: list[Path],
+    task_key: str | None,
+    task_index_to_text: dict[int, str] | None = None,
+) -> list[dict]:
     """Build tasks.jsonl entries from the dataset."""
+    task_index_to_text = task_index_to_text or {}
     if task_key is None:
+        if task_index_to_text:
+            return [
+                {"task_index": idx, "task": text}
+                for idx, text in sorted(task_index_to_text.items())
+            ]
         return [{"task_index": 0, "task": ""}]
 
-    task_set: dict[str, int] = {}
+    task_set: dict[str, int] = {text: idx for idx, text in task_index_to_text.items()}
     for pp in tqdm(parquet_paths, desc="Extracting tasks"):
         df = pd.read_parquet(pp)
         if task_key not in df.columns:
             continue
         for val in df[task_key].unique():
-            text = str(val) if not isinstance(val, str) else val
+            text = resolve_task_value(val, task_index_to_text)
             if text not in task_set:
-                task_set[text] = len(task_set)
+                next_idx = max(task_set.values(), default=-1) + 1
+                task_set[text] = next_idx
 
     if not task_set:
         return [{"task_index": 0, "task": ""}]
@@ -463,19 +622,32 @@ def build_tasks(parquet_paths: list[Path], task_key: str | None) -> list[dict]:
     return [{"task_index": idx, "task": text} for text, idx in sorted(task_set.items(), key=lambda x: x[1])]
 
 
-def build_episodes(parquet_paths: list[Path], info: dict, task_key: str | None, tasks: list[dict]) -> list[dict]:
+def build_episodes(
+    parquet_paths: list[Path],
+    info: dict,
+    task_key: str | None,
+    tasks: list[dict],
+    task_index_to_text: dict[int, str] | None = None,
+) -> list[dict]:
     """Build episodes.jsonl entries."""
+    task_index_to_text = task_index_to_text or {}
     task_text_to_idx = {t["task"]: t["task_index"] for t in tasks}
     episodes = []
-    for ep_idx, pp in enumerate(tqdm(parquet_paths, desc="Building episodes")):
+    for pp in tqdm(parquet_paths, desc="Building episodes"):
         df = pd.read_parquet(pp)
         length = len(df)
+        if "episode_index" in df.columns and len(df) > 0:
+            ep_idx = int(df["episode_index"].iloc[0])
+        else:
+            ep_idx = episode_index_from_path(pp)
+        if ep_idx < 0:
+            ep_idx = len(episodes)
 
         ep_tasks: list[str] = []
         if task_key and task_key in df.columns:
             unique_tasks = df[task_key].unique()
             for t in unique_tasks:
-                text = str(t) if not isinstance(t, str) else t
+                text = resolve_task_value(t, task_index_to_text)
                 if text and text in task_text_to_idx:
                     ep_tasks.append(text)
         if not ep_tasks:
@@ -493,6 +665,32 @@ def build_episodes(parquet_paths: list[Path], info: dict, task_key: str | None, 
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
+
+def probe_video_header(path: Path) -> dict:
+    try:
+        import av
+    except Exception as exc:
+        return {"error": f"PyAV unavailable: {exc}"}
+
+    try:
+        with av.open(str(path)) as container:
+            stream = next((s for s in container.streams if s.type == "video"), None)
+            if stream is None:
+                return {"error": "no video stream"}
+            return {
+                "codec": stream.codec_context.name,
+                "width": int(stream.codec_context.width),
+                "height": int(stream.codec_context.height),
+                "pix_fmt": (
+                    str(stream.codec_context.format.name)
+                    if stream.codec_context.format is not None
+                    else ""
+                ),
+                "fps": float(stream.average_rate) if stream.average_rate is not None else 0.0,
+            }
+    except Exception as exc:
+        return {"error": str(exc)}
+
 
 def validate_dataset(dataset_path: Path, info: dict, modality: dict) -> list[str]:
     """Run basic validation and return a list of warnings."""
@@ -520,6 +718,84 @@ def validate_dataset(dataset_path: Path, info: dict, modality: dict) -> list[str
     # Check FPS
     if info.get("fps") is None:
         warnings.append("fps not set in info.json")
+
+    parquet_paths = get_parquet_paths(dataset_path, info)
+    if parquet_paths:
+        info_total = int(info.get("total_episodes", 0))
+        if info_total and info_total != len(parquet_paths):
+            warnings.append(
+                f"info.json total_episodes={info_total}, but found {len(parquet_paths)} parquet files"
+            )
+        episode_ids = [episode_index_from_path(p) for p in parquet_paths]
+        for key, video_cfg in modality.get("video", {}).items():
+            original_key = video_cfg.get("original_key", f"observation.images.{key}")
+            feature_meta = info.get("features", {}).get(original_key, {})
+            expected_shape = feature_meta.get("shape")
+            expected_codec = feature_meta.get("video_info", {}).get("video.codec")
+            expected_pix_fmt = feature_meta.get("video_info", {}).get("video.pix_fmt")
+            expected_fps = feature_meta.get("video_info", {}).get("video.fps", info.get("fps"))
+            missing = []
+            probe_failed = []
+            codec_mismatch = []
+            shape_mismatch = []
+            pix_fmt_mismatch = []
+            fps_mismatch = []
+            for p in parquet_paths:
+                ep_idx = episode_index_from_path(p)
+                if ep_idx < 0:
+                    continue
+                chunk_idx = ep_idx // int(info.get("chunks_size", 1000))
+                video_rel = info.get(
+                    "video_path",
+                    "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4",
+                ).format(episode_chunk=chunk_idx, episode_index=ep_idx, video_key=original_key)
+                video_path = dataset_path / video_rel
+                if not video_path.exists():
+                    missing.append(ep_idx)
+                    continue
+                header = probe_video_header(video_path)
+                if "error" in header:
+                    probe_failed.append((ep_idx, header["error"]))
+                    continue
+                if expected_codec and header.get("codec") != expected_codec:
+                    codec_mismatch.append((ep_idx, header.get("codec")))
+                if expected_shape and [header.get("height"), header.get("width"), 3] != list(expected_shape):
+                    shape_mismatch.append((ep_idx, [header.get("height"), header.get("width"), 3]))
+                if expected_pix_fmt and header.get("pix_fmt") != expected_pix_fmt:
+                    pix_fmt_mismatch.append((ep_idx, header.get("pix_fmt")))
+                if expected_fps is not None and abs(float(header.get("fps", 0.0)) - float(expected_fps)) > 1e-3:
+                    fps_mismatch.append((ep_idx, header.get("fps")))
+            if missing:
+                warnings.append(
+                    f"video key '{key}' is missing {len(missing)} videos; first missing ids: {missing[:5]}"
+                )
+            if probe_failed:
+                warnings.append(
+                    f"video key '{key}' failed header probe for {len(probe_failed)} videos; "
+                    f"first failures: {probe_failed[:3]}"
+                )
+            if codec_mismatch:
+                warnings.append(
+                    f"video key '{key}' codec mismatches metadata for {len(codec_mismatch)} videos; "
+                    f"expected {expected_codec}, first mismatches: {codec_mismatch[:5]}"
+                )
+            if shape_mismatch:
+                warnings.append(
+                    f"video key '{key}' resolution mismatches metadata for {len(shape_mismatch)} videos; "
+                    f"expected {expected_shape}, first mismatches: {shape_mismatch[:5]}"
+                )
+            if pix_fmt_mismatch:
+                warnings.append(
+                    f"video key '{key}' pix_fmt mismatches metadata for {len(pix_fmt_mismatch)} videos; "
+                    f"expected {expected_pix_fmt}, first mismatches: {pix_fmt_mismatch[:5]}"
+                )
+            if fps_mismatch:
+                warnings.append(
+                    f"video key '{key}' fps mismatches metadata for {len(fps_mismatch)} videos; "
+                    f"expected {expected_fps}, first mismatches: {fps_mismatch[:5]}"
+                )
+        if len(episode_ids) != len(set(episode_ids)):
+            warnings.append("duplicate episode ids found in parquet filenames")
 
     return warnings
 
@@ -603,6 +879,8 @@ def main():
     # 1. Load info.json
     info = load_info(dataset_path)
     detected = detect_features(info)
+    existing_modality = load_json_if_exists(output_path / "meta" / "modality.json")
+    task_index_to_text, _ = load_existing_tasks(output_path)
 
     log.info("Dataset: %s", dataset_path.name)
     log.info("  Episodes: %d", info.get("total_episodes", 0))
@@ -618,25 +896,28 @@ def main():
             json.dump(info, f, indent=4)
         log.info("  Overriding FPS to %s", args.fps)
 
-    # Parse user-provided key mappings
-    state_mapping = parse_key_mapping(args.state_keys)
-    action_mapping = parse_key_mapping(args.action_keys)
-
-    # Auto-detect key mappings from info.json if not explicitly provided.
-    if state_mapping is None:
-        state_mapping = parse_layout_mapping(info, "state_vector_layout")
-        if state_mapping is not None:
-            log.info(
-                "  Auto-detected state mapping from collection_config.state_vector_layout (%d keys)",
-                len(state_mapping),
-            )
-    if action_mapping is None:
-        action_mapping = parse_layout_mapping(info, "action_vector_layout")
-        if action_mapping is not None:
-            log.info(
-                "  Auto-detected action mapping from collection_config.action_vector_layout (%d keys)",
-                len(action_mapping),
-            )
+    # Parse user-provided key mappings. Precedence:
+    # explicit CLI > existing modality.json > collection_config layout > embodiment preset > generic full vector.
+    explicit_state_mapping = parse_key_mapping(args.state_keys)
+    explicit_action_mapping = parse_key_mapping(args.action_keys)
+    state_mapping, state_mapping_source = choose_mapping(
+        explicit=explicit_state_mapping,
+        existing_modality=existing_modality,
+        info=info,
+        detected=detected,
+        modality_type="state",
+        embodiment_tag=args.embodiment_tag,
+    )
+    action_mapping, action_mapping_source = choose_mapping(
+        explicit=explicit_action_mapping,
+        existing_modality=existing_modality,
+        info=info,
+        detected=detected,
+        modality_type="action",
+        embodiment_tag=args.embodiment_tag,
+    )
+    log.info("  State mapping source: %s (%d keys)", state_mapping_source, len(state_mapping or {}))
+    log.info("  Action mapping source: %s (%d keys)", action_mapping_source, len(action_mapping or {}))
 
     # Auto-detect task key if not provided
     task_key = args.task_key
@@ -653,7 +934,8 @@ def main():
     modality = build_modality_json(info, detected, state_mapping, action_mapping, task_key)
 
     modality_path = meta_dir / "modality.json"
-    if modality_path.exists() and not args.force:
+    modality_override_requested = explicit_state_mapping is not None or explicit_action_mapping is not None
+    if modality_path.exists() and not args.force and not modality_override_requested:
         log.info("  modality.json already exists, skipping (use --force to overwrite)")
     else:
         with open(modality_path, "w") as f:
@@ -720,7 +1002,7 @@ def main():
     if tasks_path.exists() and not args.force:
         log.info("  tasks.jsonl already exists, skipping")
     else:
-        tasks = build_tasks(parquet_paths, task_key)
+        tasks = build_tasks(parquet_paths, task_key, task_index_to_text=task_index_to_text)
         with open(tasks_path, "w") as f:
             for t in tasks:
                 f.write(json.dumps(t) + "\n")
@@ -738,7 +1020,13 @@ def main():
                     tasks.append(json.loads(line.strip()))
         if not tasks:
             tasks = [{"task_index": 0, "task": ""}]
-        episodes = build_episodes(parquet_paths, info, task_key, tasks)
+        episodes = build_episodes(
+            parquet_paths,
+            info,
+            task_key,
+            tasks,
+            task_index_to_text=task_index_to_text,
+        )
         with open(episodes_path, "w") as f:
             for ep in episodes:
                 f.write(json.dumps(ep) + "\n")

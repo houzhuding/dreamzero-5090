@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import time
 
+import cv2
 import numpy as np
 import pandas as pd
 import torch
@@ -13,6 +14,20 @@ import yaml
 from groot.vla.common.utils import get_frames_by_timestamps
 
 from .lerobot import LE_ROBOT_EPISODE_FILENAME, LeRobotMixtureDataset, LeRobotSingleDataset
+
+
+def _resize_frames_to_shape(frames: np.ndarray, target_shape: tuple[int, int, int]) -> np.ndarray:
+    """Resize NHWC video frames to target HWC shape for shard concatenation."""
+    if frames.shape[1:] == target_shape:
+        return frames
+    target_h, target_w, target_c = target_shape
+    if frames.ndim != 4 or frames.shape[-1] != target_c:
+        raise ValueError(f"Cannot resize frames from shape {frames.shape} to HWC {target_shape}")
+    resized = [
+        cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        for frame in frames
+    ]
+    return np.asarray(resized, dtype=frames.dtype)
 
 
 class ShardedLeRobotSingleDataset(LeRobotSingleDataset):
@@ -173,6 +188,7 @@ class ShardedLeRobotSingleDataset(LeRobotSingleDataset):
         start_time = time.time()
         assert "video" in modality_keys, "No video modality found. No need to use caching."
         cached_frames = {}
+        target_frame_shapes = {}
         trajectory_start_indices = {}
         frame_indices_map = {}
         curr_step_index = 0
@@ -211,11 +227,15 @@ class ShardedLeRobotSingleDataset(LeRobotSingleDataset):
                 if key not in cached_frames:
                     cached_frames[key] = []
                 frames = get_frames_by_timestamps(
-                video_paths[trajectory_id][key].as_posix(),
+                    video_paths[trajectory_id][key].as_posix(),
                     timestamps=load_timestamps,
                     video_backend=video_backend,
                     video_backend_kwargs=video_backend_kwargs or {},
                 )
+                if key not in target_frame_shapes:
+                    target_frame_shapes[key] = frames.shape[1:]
+                else:
+                    frames = _resize_frames_to_shape(frames, target_frame_shapes[key])
                 cached_frames[key].append(frames)
             if cached_df is None:
                 cached_df = parquet_df
@@ -462,6 +482,7 @@ class ShardedLeRobotSubLangSingleActionChunkDatasetDROID(LeRobotSingleDataset):
         start_time = time.time()
         assert "video" in modality_keys, "No video modality found. No need to use caching."
         cached_frames = {}
+        target_frame_shapes = {}
         trajectory_start_indices = {}
         curr_step_index = 0
         cached_df = None
@@ -488,6 +509,10 @@ class ShardedLeRobotSubLangSingleActionChunkDatasetDROID(LeRobotSingleDataset):
                     video_backend_kwargs=video_backend_kwargs,
                     fps=fps,
                 )
+                if key not in target_frame_shapes:
+                    target_frame_shapes[key] = frames.shape[1:]
+                else:
+                    frames = _resize_frames_to_shape(frames, target_frame_shapes[key])
                 cached_frames[key].append(frames)
             if cached_df is None:
                 cached_df = parquet_df

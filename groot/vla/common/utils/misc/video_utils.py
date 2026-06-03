@@ -134,6 +134,7 @@ def _extract_frames_ffmpeg(video_path: str, frame_indices: list[int]) -> np.ndar
 def _extract_frames_at_timestamps_ffmpeg(video_path: str, timestamps: list[float]) -> np.ndarray:
     """Extract frames at specific timestamps using ffmpeg."""
     frames = []
+    fallback_shape = None
 
     for timestamp in timestamps:
         cmd = [
@@ -189,7 +190,28 @@ def _extract_frames_at_timestamps_ffmpeg(video_path: str, timestamps: list[float
             if len(frames) > 0:
                 frames.append(frames[-1])
             else:
-                frames.append(np.zeros((480, 640, 3), dtype=np.uint8))
+                if fallback_shape is None:
+                    try:
+                        info_cmd = [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "v:0",
+                            "-show_entries",
+                            "stream=width,height",
+                            "-of",
+                            "json",
+                            video_path,
+                        ]
+                        info_output = subprocess.check_output(info_cmd).decode("utf-8")
+                        info_data = json.loads(info_output)
+                        width = int(info_data["streams"][0]["width"])
+                        height = int(info_data["streams"][0]["height"])
+                        fallback_shape = (height, width, 3)
+                    except Exception:
+                        fallback_shape = (480, 640, 3)
+                frames.append(np.zeros(fallback_shape, dtype=np.uint8))
 
     return np.array(frames)
 

@@ -15,6 +15,7 @@ max_chunk_size: 5
 dataset_shard_sampling_rate: 0.1
 mixture_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotMixtureDataset.from_mixture_spec
 single_dataset_cls: groot.vla.data.dataset.lerobot_sharded.ShardedLeRobotSubLangSingleActionChunkDatasetDROID
+video_backend: ffmpeg
 
 # Set your DROID dataset path here or override via CLI:
 #   droid_data_root=/path/to/your/droid_dataset
@@ -36,7 +37,7 @@ train_dataset:
   metadata_versions: ${metadata_versions}
   fps: ${fps}
   dataset_kwargs:
-    video_backend: decord
+    video_backend: ${video_backend}
     use_global_metadata: ${use_global_metadata}
     max_chunk_size: ${max_chunk_size}
     relative_action: ${relative_action}
